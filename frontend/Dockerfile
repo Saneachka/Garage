@@ -8,7 +8,7 @@ ARG VITE_API_URL=/api/v1
 
 # Install dependencies
 COPY package*.json ./
-RUN npm ci
+RUN npm install
 
 # Copy source and build
 COPY . .
