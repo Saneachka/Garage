@@ -1,0 +1,12 @@
+node_modules
+dist
+build
+.env
+.env.*
+*.log
+.git
+.DS_Store
+*.local
+.vite
+coverage
+.nyc_output
