@@ -1,48 +1,29 @@
-from datetime import datetime
-from decimal import Decimal
-from typing import Optional
+from sqlalchemy import create_engine, event
+from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
-from sqlalchemy import (
-    BigInteger, Boolean, CHAR, DateTime, ForeignKey, Integer,
-    Numeric, SmallInteger, String, Text, func,
+DATABASE_URL = "sqlite:///./garage.db"
+
+engine = create_engine(
+    DATABASE_URL,
+    connect_args={"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {},
 )
-from sqlalchemy.orm import Mapped, mapped_column
 
-from database import Base
+if DATABASE_URL.startswith("sqlite"):
+    @event.listens_for(engine, "connect")
+    def enable_sqlite_fk(dbapi_connection, connection_record):
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
 
-BigIntPK = BigInteger().with_variant(Integer, "sqlite")
-
-
-class Role(Base):
-    __tablename__ = "roles"
-
-    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
-    code: Mapped[str] = mapped_column(String(50), unique=True)
-    name: Mapped[str] = mapped_column(String(200))
+SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
 
-class User(Base):
-    __tablename__ = "users"
+class Base(DeclarativeBase):
+    pass
 
-    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
-    role_id: Mapped[int] = mapped_column(ForeignKey("roles.id"))
-    full_name: Mapped[str] = mapped_column(String(200))
-    email: Mapped[str] = mapped_column(String(254), unique=True)
-    password_hash: Mapped[str] = mapped_column(String(255))
-    phone: Mapped[Optional[str]] = mapped_column(String(30))
-    deleted_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
-
-
-class UserGroup(Base):
-    __tablename__ = "user_groups"
-
-    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
-    name: Mapped[str] = mapped_column(String(200))
-    description: Mapped[Optional[str]] = mapped_column(Text)
-
-
-class UserGroupMember(Base):
-    __tablename__ = "user_group_members"
-
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), primary_key=True)
-    group_id: Mapped[int] = mapped_column(ForeignKey("user_groups.id"), primary_key=True)
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
