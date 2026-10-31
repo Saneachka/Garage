@@ -4,6 +4,7 @@ from fastapi import FastAPI
 from sqlalchemy import select
 
 import auth
+import services
 from database import SessionLocal
 from models import Role
 
@@ -33,7 +34,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Garage", lifespan=lifespan)
 app.include_router(auth.router)
-
+app.include_router(services.router)
 
 @app.get("/")
 def root():
