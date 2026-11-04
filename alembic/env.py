@@ -4,7 +4,6 @@ from alembic import context
 from sqlalchemy import engine_from_config, pool
 
 from database import Base, DATABASE_URL
-import models  # noqa: F401  (нужен, чтобы Alembic увидел все таблицы)
 
 config = context.config
 config.set_main_option("sqlalchemy.url", DATABASE_URL)
@@ -37,7 +36,7 @@ def run_migrations_online() -> None:
         context.configure(
             connection=connection,
             target_metadata=target_metadata,
-            render_as_batch=True,  # нужно для изменения таблиц в SQLite
+            render_as_batch=True, 
         )
         with context.begin_transaction():
             context.run_migrations()

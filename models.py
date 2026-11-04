@@ -10,7 +10,6 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from database import Base
 
-# В SQLite автоинкремент работает только у Integer, поэтому для него подменяем тип.
 BigIntPK = BigInteger().with_variant(Integer, "sqlite")
 
 
@@ -91,7 +90,10 @@ class Appointment(Base):
     slot_id: Mapped[int] = mapped_column(ForeignKey("schedule_slots.id"), unique=True)
     status: Mapped[str] = mapped_column(String(20))
     comment: Mapped[Optional[str]] = mapped_column(Text)
+    starts_at: Mapped[datetime] = mapped_column(DateTime)
+    ends_at: Mapped[datetime] = mapped_column(DateTime)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    
 
 
 class AppointmentService(Base):
@@ -133,3 +135,8 @@ class UserSession(Base):
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     expires_at: Mapped[datetime] = mapped_column(DateTime)
+
+class AppointmentSlot(Base):
+    __tablename__ = "appointment_slots"
+    slot_id: Mapped[int] = mapped_column(ForeignKey("schedule_slots.id"), primary_key=True)
+    appointment_id: Mapped[int] = mapped_column(ForeignKey("appointments.id"), index=True)
