@@ -2,7 +2,8 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from sqlalchemy import select
-
+import diagnostics
+import work_orders
 import appointments
 import auth
 import schedule
@@ -42,6 +43,8 @@ app.include_router(vehicles.router)
 app.include_router(schedule.masters_router)
 app.include_router(schedule.slots_router)
 app.include_router(appointments.router)
+app.include_router(diagnostics.router)
+app.include_router(work_orders.router)
 
 @app.get("/")
 def root():
