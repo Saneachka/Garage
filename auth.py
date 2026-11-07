@@ -14,7 +14,7 @@ from database import get_db
 from models import Role, User, UserSession
 
 SESSION_COOKIE = "session_id"
-SESSION_DAYS = 7
+SESSION_DAYS = 1
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
