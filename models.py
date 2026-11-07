@@ -87,7 +87,7 @@ class Appointment(Base):
     id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
     client_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
     vehicle_id: Mapped[int] = mapped_column(ForeignKey("vehicles.id"))
-    slot_id: Mapped[int] = mapped_column(ForeignKey("schedule_slots.id"), unique=True)
+    slot_id: Mapped[int] = mapped_column(ForeignKey("schedule_slots.id"), index=True)
     status: Mapped[str] = mapped_column(String(20))
     comment: Mapped[Optional[str]] = mapped_column(Text)
     starts_at: Mapped[datetime] = mapped_column(DateTime)
@@ -123,6 +123,7 @@ class WorkOrder(Base):
     master_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
     created_by: Mapped[int] = mapped_column(ForeignKey("users.id"))
     work_description: Mapped[str] = mapped_column(Text)
+    work_cost: Mapped[Decimal] = mapped_column(Numeric(12, 2), server_default="0")
     total_cost: Mapped[Decimal] = mapped_column(Numeric(12, 2))
     status: Mapped[str] = mapped_column(String(20))
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
@@ -140,3 +141,11 @@ class AppointmentSlot(Base):
     __tablename__ = "appointment_slots"
     slot_id: Mapped[int] = mapped_column(ForeignKey("schedule_slots.id"), primary_key=True)
     appointment_id: Mapped[int] = mapped_column(ForeignKey("appointments.id"), index=True)
+
+class WorkOrderPart(Base):
+    __tablename__ = "work_order_parts"
+    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
+    work_order_id: Mapped[int] = mapped_column(ForeignKey("work_orders.id"), index=True)
+    name: Mapped[str] = mapped_column(String(200))
+    quantity: Mapped[Decimal] = mapped_column(Numeric(10, 2))
+    unit_price: Mapped[Decimal] = mapped_column(Numeric(12, 2))

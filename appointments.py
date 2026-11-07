@@ -1,8 +1,8 @@
-from datetime import datetime
+from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session
@@ -190,6 +190,29 @@ def collect_block(db: Session, start_slot_id: int, total_minutes: float) -> List
                % (covered, total_minutes),
     )
 
+def free_block(db: Session, master_id: int, starts_at: datetime,
+               total_minutes: float) -> Optional[List[ScheduleSlot]]:
+    """Подряд идущие свободные слоты мастера от точного времени starts_at, либо None."""
+    candidates = db.scalars(
+        select(ScheduleSlot)
+        .where(ScheduleSlot.master_user_id == master_id, ScheduleSlot.starts_at >= starts_at)
+        .order_by(ScheduleSlot.starts_at)
+        .limit(48)
+    ).all()
+    if not candidates or candidates[0].starts_at != starts_at:
+        return None
+    block, covered, prev_end = [], 0.0, None
+    for s in candidates:
+        if (prev_end is not None and s.starts_at != prev_end) or not s.is_available:
+            return None
+        block.append(s)
+        covered += slot_minutes(s)
+        prev_end = s.ends_at
+        if covered >= total_minutes:
+            return block
+    return None
+
+
 
 def claim_slots(db: Session, slot_ids: List[int]):
     result = db.execute(
@@ -328,6 +351,28 @@ def list_appointments(
     items = db.scalars(query.order_by(Appointment.starts_at.desc()).limit(500)).all()
     return [to_out(db, a) for a in items]
 
+@router.get("/availability")
+def availability(day: date, master_user_id: int, service_ids: List[int] = Query(...),
+                 db: Session = Depends(get_db)):
+    """С каких слотов мастера можно начать выбранные услуги в этот день. Вход не нужен."""
+    get_active_master(db, master_user_id)
+    services = get_active_services(db, service_ids)
+    total = sum(s.duration_minutes for s in services)
+    day_start = datetime.combine(day, time.min)
+    slots = db.scalars(
+        select(ScheduleSlot)
+        .where(ScheduleSlot.master_user_id == master_user_id,
+               ScheduleSlot.starts_at >= max(day_start, datetime.now()),
+               ScheduleSlot.starts_at < day_start + timedelta(days=1),
+               ScheduleSlot.is_available.is_(True))
+        .order_by(ScheduleSlot.starts_at)
+    ).all()
+    result = []
+    for s in slots:
+        block = free_block(db, master_user_id, s.starts_at, total)
+        if block:
+            result.append({"slot_id": s.id, "starts_at": s.starts_at, "ends_at": block[-1].ends_at})
+    return result
 
 @router.get("/{appointment_id}", response_model=AppointmentOut)
 def get_appointment(appointment_id: int,
