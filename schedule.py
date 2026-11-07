@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from auth import hash_password, require_roles
 from database import get_db
-from models import Appointment, Role, ScheduleSlot, User, AppointmentSlot
+from models import Appointment, Role, ScheduleSlot, User, AppointmentSlot, UserGroupMember
 
 masters_router = APIRouter(prefix="/masters", tags=["masters"])
 slots_router = APIRouter(prefix="/slots", tags=["slots"])
@@ -48,15 +48,15 @@ def get_master_or_404(db: Session, master_id: int) -> User:
 
 
 @masters_router.get("", response_model=List[MasterPublic])
-def list_masters(db: Session = Depends(get_db)):
+def list_masters(group_id: Optional[int] = None, db: Session = Depends(get_db)):
     role = db.scalar(select(Role).where(Role.code == "master"))
     if role is None:
         return []
-    return db.scalars(
-        select(User)
-        .where(User.role_id == role.id, User.deleted_at.is_(None))
-        .order_by(User.full_name)
-    ).all()
+    query = select(User).where(User.role_id == role.id, User.deleted_at.is_(None))
+    if group_id is not None:
+        query = query.where(User.id.in_(
+            select(UserGroupMember.user_id).where(UserGroupMember.group_id == group_id)))
+    return db.scalars(query.order_by(User.full_name)).all()
 
 
 @masters_router.post("", response_model=MasterAdminOut, status_code=201,
@@ -244,15 +244,17 @@ def create_slots_bulk(data: SlotBulkIn, db: Session = Depends(get_db)):
         db.refresh(slot)
     return new_slots
 
-
 @slots_router.delete("/{slot_id}", status_code=204,
                      dependencies=[Depends(require_roles("admin"))])
 def delete_slot(slot_id: int, db: Session = Depends(get_db)):
     slot = db.get(ScheduleSlot, slot_id)
     if slot is None:
-        busy = db.scalar(select(Appointment.id).where(Appointment.slot_id == slot.id).limit(1)) \
+        raise HTTPException(status_code=404, detail="Слот не найден")
+    busy = db.scalar(select(Appointment.id).where(Appointment.slot_id == slot.id).limit(1)) \
         or db.scalar(select(AppointmentSlot.slot_id).where(AppointmentSlot.slot_id == slot.id).limit(1))
     if busy:
         raise HTTPException(status_code=409, detail="Нельзя удалить: на слот есть запись")
     db.delete(slot)
     db.commit()
+
+    

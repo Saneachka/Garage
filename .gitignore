@@ -5,3 +5,6 @@ __pycache__/
 *.db
 .env
 .DS_Store
+tests/
+pytest.ini
+.pytest_cache/
