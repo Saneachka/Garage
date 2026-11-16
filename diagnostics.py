@@ -41,7 +41,7 @@ def create_diagnostic(data: DiagnosticIn, user: User = Depends(require_roles("ma
                       db: Session = Depends(get_db)):
     # get_visible вернёт 404, если запись не назначена этому мастеру
     appointment = get_visible(db, data.appointment_id, user)
-    if appointment.status not in ("confirmed", "completed"):
+    if appointment.status not in ("confirmed", "in_progress", "completed"):
         raise HTTPException(status_code=409,
                             detail="Диагностику можно внести только по подтверждённой записи")
     if db.scalar(select(Diagnostic.id).where(Diagnostic.appointment_id == appointment.id)):
@@ -71,6 +71,7 @@ def list_diagnostics(user: User = Depends(require_roles("client", "master", "adm
     return db.scalars(query.order_by(Diagnostic.id.desc()).limit(500)).all()
 
 
+# Объявлен раньше "/{diagnostic_id}", чтобы пути не путались
 @router.get("/appointment/{appointment_id}", response_model=DiagnosticOut)
 def get_by_appointment(appointment_id: int,
                        user: User = Depends(require_roles("client", "master", "admin")),
@@ -89,7 +90,7 @@ def get_diagnostic(diagnostic_id: int,
     diagnostic = db.get(Diagnostic, diagnostic_id)
     if diagnostic is None:
         raise HTTPException(status_code=404, detail="Диагностика не найдена")
-    get_visible(db, diagnostic.appointment_id, user) 
+    get_visible(db, diagnostic.appointment_id, user)  # 404, если нет доступа
     return diagnostic
 
 
@@ -102,7 +103,7 @@ def update_diagnostic(diagnostic_id: int, data: DiagnosticUpdate,
         raise HTTPException(status_code=404, detail="Диагностика не найдена")
     for field, value in data.model_dump(exclude_unset=True).items():
         if value is None and field == "findings":
-            continue  
+            continue  # обязательное поле нельзя обнулить
         setattr(diagnostic, field, value)
     db.commit()
     db.refresh(diagnostic)

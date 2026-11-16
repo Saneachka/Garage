@@ -13,11 +13,15 @@ from models import (
     Appointment, AppointmentService, AppointmentSlot, Role, ScheduleSlot,
     Service, User, Vehicle,
 )
+from order_logic import ORDER_STATUS, PartIn, create_order, get_order
 
 router = APIRouter(prefix="/appointments", tags=["appointments"])
 
-ACTIVE = ("new", "confirmed")  
+ACTIVE = ("new", "confirmed", "in_progress")  
+OPEN = ("new", "confirmed")                   
 
+
+# ---------- схемы ----------
 def check_unique(value):
     if len(set(value)) != len(value):
         raise ValueError("Услуги в списке не должны повторяться")
@@ -31,6 +35,7 @@ def check_naive(value: datetime) -> datetime:
 
 
 class AppointmentIn(BaseModel):
+    """Запись клиента: слот (он принадлежит конкретному мастеру) + услуги."""
     vehicle_id: int
     slot_id: int
     service_ids: List[int] = Field(min_length=1, max_length=20)
@@ -40,6 +45,7 @@ class AppointmentIn(BaseModel):
 
 
 class AdminAppointmentIn(BaseModel):
+    """Запись, которую оформляет администратор (сложные работы, хоть на несколько дней)."""
     client_user_id: int
     vehicle_id: int
     master_user_id: int
@@ -47,6 +53,10 @@ class AdminAppointmentIn(BaseModel):
     ends_at: datetime
     service_ids: List[int] = Field(default_factory=list, max_length=20)
     comment: Optional[str] = Field(default=None, max_length=2000)
+    # Данные заказ-наряда
+    work_description: Optional[str] = Field(default=None, max_length=10000)
+    work_cost: Optional[Decimal] = Field(default=None, ge=0, max_digits=12, decimal_places=2)
+    parts: List[PartIn] = Field(default_factory=list, max_length=100)
 
     _unique = field_validator("service_ids")(check_unique)
     _starts = field_validator("starts_at")(check_naive)
@@ -83,7 +93,10 @@ class AppointmentOut(BaseModel):
     created_at: datetime
     services: List[ServiceLine]
     total_price: Decimal
+    work_order_id: Optional[int] = None
 
+
+# ---------- вспомогательное ----------
 def role_code(user: User, db: Session) -> str:
     return db.get(Role, user.role_id).code
 
@@ -109,6 +122,10 @@ def to_out(db: Session, a: Appointment) -> AppointmentOut:
         ServiceLine(service_id=s.id, name=s.name, quoted_price=link.quoted_price)
         for link, s in rows
     ]
+    # Стоимость записи = «Итого» наряда. Пока наряда нет: сумма услуг каталога.
+    order = get_order(db, a.id)
+    total = order.total_cost if order is not None else sum(
+        (l.quoted_price for l in lines), Decimal("0"))
     return AppointmentOut(
         id=a.id,
         client_user_id=a.client_user_id,
@@ -122,11 +139,13 @@ def to_out(db: Session, a: Appointment) -> AppointmentOut:
         comment=a.comment,
         created_at=a.created_at,
         services=lines,
-        total_price=sum((l.quoted_price for l in lines), Decimal("0")),
+        total_price=total,
+        work_order_id=order.id if order is not None else None,
     )
 
 
 def get_visible(db: Session, appointment_id: int, user: User) -> Appointment:
+    """Клиент видит свои, мастер свои, админ все. Чужое: 404."""
     a = db.get(Appointment, appointment_id)
     if a is None:
         raise HTTPException(status_code=404, detail="Запись не найдена")
@@ -155,6 +174,7 @@ def get_active_services(db: Session, service_ids: List[int]) -> List[Service]:
 
 
 def collect_block(db: Session, start_slot_id: int, total_minutes: float) -> List[ScheduleSlot]:
+    """Подряд идущие свободные слоты одного мастера от выбранного, пока не наберётся время."""
     first = db.get(ScheduleSlot, start_slot_id)
     if first is None:
         raise HTTPException(status_code=404, detail="Слот не найден")
@@ -173,7 +193,7 @@ def collect_block(db: Session, start_slot_id: int, total_minutes: float) -> List
     block, covered, prev_end = [], 0.0, None
     for s in candidates:
         if prev_end is not None and s.starts_at != prev_end:
-            break  
+            break  # разрыв в расписании (перерыв, конец дня)
         if not s.is_available:
             break
         block.append(s)
@@ -189,6 +209,7 @@ def collect_block(db: Session, start_slot_id: int, total_minutes: float) -> List
         detail="Подряд свободно только %d мин, а нужно %d мин. Выберите другое время"
                % (covered, total_minutes),
     )
+
 
 def free_block(db: Session, master_id: int, starts_at: datetime,
                total_minutes: float) -> Optional[List[ScheduleSlot]]:
@@ -213,8 +234,8 @@ def free_block(db: Session, master_id: int, starts_at: datetime,
     return None
 
 
-
 def claim_slots(db: Session, slot_ids: List[int]):
+    """Атомарно занимает слоты. Если хоть один успели занять, операция отменяется."""
     result = db.execute(
         update(ScheduleSlot)
         .where(ScheduleSlot.id.in_(slot_ids), ScheduleSlot.is_available.is_(True))
@@ -240,17 +261,31 @@ def release_slots(db: Session, appointment_id: int):
     db.execute(update(ScheduleSlot).where(ScheduleSlot.id.in_(ids)).values(is_available=True))
 
 
+def apply_status(db: Session, a: Appointment, new_status: str):
+    """Единая точка смены статуса: запись и наряд меняются вместе. Коммит делает вызывающий."""
+    a.status = new_status
+    order = get_order(db, a.id)
+    if order is not None:
+        order.status = ORDER_STATUS[new_status]
+        if new_status == "completed":
+            order.completed_at = datetime.utcnow()
+    if new_status == "cancelled":
+        release_slots(db, a.id)
+
+
 def add_service_lines(db: Session, appointment: Appointment, services: List[Service]):
     for s in services:
         db.add(AppointmentService(
             appointment_id=appointment.id, service_id=s.id, quoted_price=s.price,
         ))
 
+
+# ---------- создание ----------
 @router.post("", response_model=AppointmentOut, status_code=201)
 def create_appointment(data: AppointmentIn, user: User = Depends(require_roles("client")),
                        db: Session = Depends(get_db)):
     vehicle = db.get(Vehicle, data.vehicle_id)
-    if vehicle is None or vehicle.client_user_id != user.id:
+    if vehicle is None or vehicle.client_user_id != user.id or vehicle.archived_at is not None:
         raise HTTPException(status_code=404, detail="Автомобиль не найден")
 
     services = get_active_services(db, data.service_ids)
@@ -276,15 +311,16 @@ def create_appointment(data: AppointmentIn, user: User = Depends(require_roles("
     return to_out(db, appointment)
 
 
-@router.post("/admin", response_model=AppointmentOut, status_code=201,
-             dependencies=[Depends(require_roles("admin"))])
-def create_appointment_by_admin(data: AdminAppointmentIn, db: Session = Depends(get_db)):
-    """Сложные работы: администратор резервирует все слоты мастера в периоде (хоть на несколько дней)."""
+@router.post("/admin", response_model=AppointmentOut, status_code=201)
+def create_appointment_by_admin(data: AdminAppointmentIn,
+                                admin: User = Depends(require_roles("admin")),
+                                db: Session = Depends(get_db)):
+    """Сложные работы: админ резервирует все слоты мастера в периоде и сразу создаёт наряд."""
     client = db.get(User, data.client_user_id)
     if client is None or client.deleted_at is not None or role_code(client, db) != "client":
         raise HTTPException(status_code=404, detail="Клиент не найден")
     vehicle = db.get(Vehicle, data.vehicle_id)
-    if vehicle is None or vehicle.client_user_id != client.id:
+    if vehicle is None or vehicle.client_user_id != client.id or vehicle.archived_at is not None:
         raise HTTPException(status_code=404, detail="Автомобиль этого клиента не найден")
     get_active_master(db, data.master_user_id)
     services = get_active_services(db, data.service_ids)
@@ -315,18 +351,25 @@ def create_appointment_by_admin(data: AdminAppointmentIn, db: Session = Depends(
         slot_id=slots[0].id,
         starts_at=slots[0].starts_at,
         ends_at=slots[-1].ends_at,
-        status="confirmed",  
+        status="confirmed",  # админ создаёт сразу подтверждённую
         comment=data.comment,
     )
     db.add(appointment)
     db.flush()
     reserve(db, appointment, slots)
     add_service_lines(db, appointment, services)
+    db.flush()
+    create_order(
+        db, appointment, data.master_user_id, admin.id,
+        data.work_description or data.comment or "Работы по записи",
+        work_cost=data.work_cost, parts=data.parts,
+    )
     db.commit()
     db.refresh(appointment)
     return to_out(db, appointment)
 
 
+# ---------- просмотр ----------
 @router.get("", response_model=List[AppointmentOut])
 def list_appointments(
     status: Optional[str] = None,
@@ -351,6 +394,8 @@ def list_appointments(
     items = db.scalars(query.order_by(Appointment.starts_at.desc()).limit(500)).all()
     return [to_out(db, a) for a in items]
 
+
+# Объявлен раньше "/{appointment_id}", чтобы путь не принимался за id
 @router.get("/availability")
 def availability(day: date, master_user_id: int, service_ids: List[int] = Query(...),
                  db: Session = Depends(get_db)):
@@ -374,6 +419,7 @@ def availability(day: date, master_user_id: int, service_ids: List[int] = Query(
             result.append({"slot_id": s.id, "starts_at": s.starts_at, "ends_at": block[-1].ends_at})
     return result
 
+
 @router.get("/{appointment_id}", response_model=AppointmentOut)
 def get_appointment(appointment_id: int,
                     user: User = Depends(require_roles("client", "master", "admin")),
@@ -381,17 +427,21 @@ def get_appointment(appointment_id: int,
     return to_out(db, get_visible(db, appointment_id, user))
 
 
+# ---------- изменение ----------
 @router.post("/{appointment_id}/cancel", response_model=AppointmentOut)
 def cancel_appointment(appointment_id: int,
                        user: User = Depends(require_roles("client", "admin")),
                        db: Session = Depends(get_db)):
     a = get_visible(db, appointment_id, user)
-    if a.status not in ACTIVE:
+    if role_code(user, db) == "client":
+        if a.status not in OPEN:
+            raise HTTPException(status_code=409,
+                                detail="Отменить можно только запись, работы по которой не начались")
+        if a.starts_at <= datetime.now():
+            raise HTTPException(status_code=409, detail="Время записи уже наступило")
+    elif a.status not in ACTIVE:  # админ может отменить и запись в работе
         raise HTTPException(status_code=409, detail="Эту запись нельзя отменить")
-    if role_code(user, db) == "client" and a.starts_at <= datetime.now():
-        raise HTTPException(status_code=409, detail="Время записи уже наступило")
-    a.status = "cancelled"
-    release_slots(db, a.id)
+    apply_status(db, a, "cancelled")
     db.commit()
     db.refresh(a)
     return to_out(db, a)
@@ -402,7 +452,7 @@ def reschedule_appointment(appointment_id: int, data: RescheduleIn,
                            user: User = Depends(require_roles("client", "admin")),
                            db: Session = Depends(get_db)):
     a = get_visible(db, appointment_id, user)
-    if a.status not in ACTIVE:
+    if a.status not in OPEN:
         raise HTTPException(status_code=409, detail="Эту запись нельзя перенести")
     if role_code(user, db) == "client" and a.starts_at <= datetime.now():
         raise HTTPException(status_code=409, detail="Время записи уже наступило")
@@ -413,7 +463,7 @@ def reschedule_appointment(appointment_id: int, data: RescheduleIn,
         .where(AppointmentSlot.appointment_id == a.id)
         .order_by(ScheduleSlot.starts_at)
     ).all()
-
+    # Переносим только записи одним непрерывным блоком. Многодневные: отмена и новая запись
     for prev, nxt in zip(current, current[1:]):
         if prev.ends_at != nxt.starts_at:
             raise HTTPException(
@@ -424,29 +474,55 @@ def reschedule_appointment(appointment_id: int, data: RescheduleIn,
         raise HTTPException(status_code=422, detail="Выберите другое время")
 
     total = sum(slot_minutes(s) for s in current)
-    release_slots(db, a.id)  
-    block = collect_block(db, data.new_slot_id, total)  
+    release_slots(db, a.id)  # освобождаем в этой же транзакции: новое время может пересекаться со старым
+    block = collect_block(db, data.new_slot_id, total)  # при ошибке транзакция откатится
     claim_slots(db, [s.id for s in block])
     reserve(db, a, block)
     a.slot_id = block[0].id
     a.starts_at = block[0].starts_at
     a.ends_at = block[-1].ends_at
-    if role_code(user, db) == "client":
-        a.status = "new"  
+    order = get_order(db, a.id)
+    if order is not None:  # если новый слот у другого мастера, наряд переходит к нему
+        order.master_user_id = block[0].master_user_id
     db.commit()
     db.refresh(a)
     return to_out(db, a)
 
 
-@router.post("/{appointment_id}/confirm", response_model=AppointmentOut,
-             dependencies=[Depends(require_roles("admin"))])
-def confirm_appointment(appointment_id: int, db: Session = Depends(get_db)):
+@router.post("/{appointment_id}/confirm", response_model=AppointmentOut)
+def confirm_appointment(appointment_id: int, admin: User = Depends(require_roles("admin")),
+                        db: Session = Depends(get_db)):
     a = db.get(Appointment, appointment_id)
     if a is None:
         raise HTTPException(status_code=404, detail="Запись не найдена")
     if a.status != "new":
         raise HTTPException(status_code=409, detail="Подтвердить можно только новую запись")
+    master_id = db.get(ScheduleSlot, a.slot_id).master_user_id
+    names = db.scalars(
+        select(Service.name)
+        .join(AppointmentService, AppointmentService.service_id == Service.id)
+        .where(AppointmentService.appointment_id == a.id)
+        .order_by(Service.name)
+    ).all()
     a.status = "confirmed"
+    # Наряд создаётся автоматически: работа по цене из каталога
+    description = "Работы: " + "; ".join(names) if names else "Работы по записи"
+    create_order(db, a, master_id, admin.id, description)
+    db.commit()
+    db.refresh(a)
+    return to_out(db, a)
+
+
+@router.post("/{appointment_id}/start", response_model=AppointmentOut)
+def start_appointment(appointment_id: int,
+                      user: User = Depends(require_roles("master", "admin")),
+                      db: Session = Depends(get_db)):
+    a = get_visible(db, appointment_id, user)
+    if a.status != "confirmed":
+        raise HTTPException(status_code=409, detail="В работу можно взять только подтверждённую запись")
+    if get_order(db, a.id) is None:
+        raise HTTPException(status_code=409, detail="Сначала нужен заказ-наряд")
+    apply_status(db, a, "in_progress")
     db.commit()
     db.refresh(a)
     return to_out(db, a)
@@ -457,9 +533,9 @@ def complete_appointment(appointment_id: int,
                          user: User = Depends(require_roles("master", "admin")),
                          db: Session = Depends(get_db)):
     a = get_visible(db, appointment_id, user)
-    if a.status != "confirmed":
-        raise HTTPException(status_code=409, detail="Завершить можно только подтверждённую запись")
-    a.status = "completed"
+    if a.status != "in_progress":
+        raise HTTPException(status_code=409, detail="Завершить можно только запись в работе")
+    apply_status(db, a, "completed")
     db.commit()
     db.refresh(a)
     return to_out(db, a)

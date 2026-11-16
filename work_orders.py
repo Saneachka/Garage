@@ -1,5 +1,5 @@
 from datetime import datetime
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -7,10 +7,11 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from appointments import get_active_master, role_code
+from appointments import apply_status, get_active_master, role_code
 from auth import require_roles
 from database import get_db
-from models import Appointment, AppointmentService, User, WorkOrder, WorkOrderPart
+from models import Appointment, User, WorkOrder, WorkOrderPart
+from order_logic import PartIn, create_order, load_parts, money, recalc
 
 router = APIRouter(prefix="/work-orders", tags=["work-orders"])
 
@@ -19,20 +20,9 @@ TRANSITIONS = {
     "in_progress": {"completed", "cancelled"},
 }
 MASTER_ALLOWED = {"in_progress", "completed"}  # отменять наряд может только администратор
-CENT = Decimal("0.01")
-
-
-def money(value) -> Decimal:
-    return Decimal(value).quantize(CENT, rounding=ROUND_HALF_UP)
 
 
 # ---------- схемы ----------
-class PartIn(BaseModel):
-    name: str = Field(min_length=1, max_length=200)
-    quantity: Decimal = Field(gt=0, max_digits=10, decimal_places=2)
-    unit_price: Decimal = Field(ge=0, max_digits=12, decimal_places=2)
-
-
 class PartUpdate(BaseModel):
     name: Optional[str] = Field(default=None, min_length=1, max_length=200)
     quantity: Optional[Decimal] = Field(default=None, gt=0, max_digits=10, decimal_places=2)
@@ -48,10 +38,11 @@ class PartOut(BaseModel):
 
 
 class WorkOrderIn(BaseModel):
+    """Ручное создание: для записей, у которых наряда ещё нет."""
     appointment_id: int
     master_user_id: int
     work_description: str = Field(min_length=1, max_length=10000)
-    # Простые операции: не указывать, возьмётся сумма услуг записи. Сложные: админ задаёт сам.
+    # Не указан: берётся сумма услуг записи из каталога
     work_cost: Optional[Decimal] = Field(default=None, ge=0, max_digits=12, decimal_places=2)
     parts: List[PartIn] = Field(default_factory=list, max_length=100)
 
@@ -82,20 +73,6 @@ class WorkOrderOut(BaseModel):
 
 
 # ---------- вспомогательное ----------
-def load_parts(db: Session, order_id: int) -> List[WorkOrderPart]:
-    return db.scalars(
-        select(WorkOrderPart).where(WorkOrderPart.work_order_id == order_id)
-        .order_by(WorkOrderPart.id)
-    ).all()
-
-
-def recalc(db: Session, order: WorkOrder):
-    """Итог = работы + запчасти."""
-    parts_cost = sum((money(p.quantity * p.unit_price) for p in load_parts(db, order.id)),
-                     Decimal("0"))
-    order.total_cost = money(order.work_cost + parts_cost)
-
-
 def to_out(db: Session, order: WorkOrder) -> WorkOrderOut:
     lines = [
         PartOut(id=p.id, name=p.name, quantity=p.quantity, unit_price=p.unit_price,
@@ -151,33 +128,9 @@ def create_work_order(data: WorkOrderIn, user: User = Depends(require_roles("adm
         raise HTTPException(status_code=404, detail="Запись не найдена")
     if appointment.status == "cancelled":
         raise HTTPException(status_code=409, detail="Запись отменена")
-    if db.scalar(select(WorkOrder.id).where(WorkOrder.appointment_id == appointment.id)):
-        raise HTTPException(status_code=409, detail="Заказ-наряд по этой записи уже есть")
     get_active_master(db, data.master_user_id)
-
-    work_cost = data.work_cost
-    if work_cost is None:  # простая операция: цена услуг на момент записи
-        prices = db.scalars(
-            select(AppointmentService.quoted_price)
-            .where(AppointmentService.appointment_id == appointment.id)
-        ).all()
-        work_cost = sum(prices, Decimal("0"))
-
-    order = WorkOrder(
-        appointment_id=appointment.id,
-        master_user_id=data.master_user_id,
-        created_by=user.id,
-        work_description=data.work_description,
-        work_cost=money(work_cost),
-        total_cost=money(work_cost),
-        status="new",
-    )
-    db.add(order)
-    db.flush()
-    for part in data.parts:
-        db.add(WorkOrderPart(work_order_id=order.id, **part.model_dump()))
-    db.flush()
-    recalc(db, order)
+    order = create_order(db, appointment, data.master_user_id, user.id,
+                         data.work_description, data.work_cost, data.parts)
     db.commit()
     db.refresh(order)
     return to_out(db, order)
@@ -236,9 +189,8 @@ def change_status(order_id: int, data: StatusIn,
         )
     if role_code(user, db) == "master" and data.status not in MASTER_ALLOWED:
         raise HTTPException(status_code=403, detail="Отменить наряд может только администратор")
-    order.status = data.status
-    if data.status == "completed":
-        order.completed_at = datetime.utcnow()
+    # Статус меняется и у записи, и у наряда одновременно
+    apply_status(db, db.get(Appointment, order.appointment_id), data.status)
     db.commit()
     db.refresh(order)
     return to_out(db, order)

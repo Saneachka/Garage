@@ -2,11 +2,11 @@ from datetime import datetime
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
 from sqlalchemy import delete, or_, select
 from sqlalchemy.orm import Session
 
-from appointments import release_slots, role_code
+from appointments import apply_status, role_code
 from auth import (
     SESSION_COOKIE, _token_hash, get_current_user, hash_password,
     require_roles, verify_password,
@@ -50,6 +50,19 @@ class RoleChange(BaseModel):
     role: str
 
 
+class AdminUserUpdate(BaseModel):
+    full_name: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    phone: Optional[str] = Field(default=None, max_length=30)
+    email: Optional[EmailStr] = None
+
+
+class ClientCreate(BaseModel):
+    full_name: str = Field(min_length=1, max_length=200)
+    email: EmailStr
+    phone: Optional[str] = Field(default=None, max_length=30)
+    password: str = Field(min_length=8, max_length=128)
+
+
 def user_out(db: Session, user: User) -> UserOut:
     return UserOut(
         id=user.id,
@@ -68,7 +81,7 @@ def active_appointments_query(user_id: int, as_master: bool):
         query = query.where(ScheduleSlot.master_user_id == user_id)
     else:
         query = query.where(Appointment.client_user_id == user_id)
-    return query.where(Appointment.status.in_(("new", "confirmed")),
+    return query.where(Appointment.status.in_(("new", "confirmed", "in_progress")),
                        Appointment.ends_at >= datetime.now())
 
 
@@ -77,6 +90,11 @@ def drop_sessions(db: Session, user_id: int, keep_hash: Optional[str] = None):
     if keep_hash:
         query = query.where(UserSession.id != keep_hash)
     db.execute(query)
+
+
+def cancel_client_appointments(db: Session, user_id: int):
+    for appointment_id in db.scalars(active_appointments_query(user_id, as_master=False)).all():
+        apply_status(db, db.get(Appointment, appointment_id), "cancelled")
 
 
 @profile_router.get("", response_model=UserOut)
@@ -116,10 +134,7 @@ def delete_account(data: PasswordConfirm, response: Response,
     """Клиент удаляет свой аккаунт. Будущие записи отменяются, история остаётся."""
     if not verify_password(data.password, user.password_hash):
         raise HTTPException(status_code=400, detail="Пароль неверен")
-    for appointment_id in db.scalars(active_appointments_query(user.id, as_master=False)).all():
-        appointment = db.get(Appointment, appointment_id)
-        appointment.status = "cancelled"
-        release_slots(db, appointment.id)
+    cancel_client_appointments(db, user.id)
     user.deleted_at = datetime.utcnow()
     drop_sessions(db, user.id)
     db.commit()
@@ -153,9 +168,44 @@ def get_user_or_404(db: Session, user_id: int) -> User:
     return user
 
 
+# Объявлен раньше "/{user_id}", чтобы путь не принимался за id
+@users_router.post("/clients", response_model=UserOut, status_code=201)
+def create_client(data: ClientCreate, db: Session = Depends(get_db)):
+    """Админ заводит клиента, который приехал без регистрации."""
+    email = data.email.lower()
+    if db.scalar(select(User).where(User.email == email)):
+        raise HTTPException(status_code=409, detail="Почта уже зарегистрирована")
+    role = db.scalar(select(Role).where(Role.code == "client"))
+    user = User(role_id=role.id, full_name=data.full_name, email=email,
+                phone=data.phone, password_hash=hash_password(data.password))
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    return user_out(db, user)
+
+
 @users_router.get("/{user_id}", response_model=UserOut)
 def get_user(user_id: int, db: Session = Depends(get_db)):
     return user_out(db, get_user_or_404(db, user_id))
+
+
+@users_router.patch("/{user_id}", response_model=UserOut)
+def update_user(user_id: int, data: AdminUserUpdate, db: Session = Depends(get_db)):
+    """Админ правит имя, телефон и почту клиента (или мастера)."""
+    user = get_user_or_404(db, user_id)
+    changes = data.model_dump(exclude_unset=True)
+    if changes.get("email"):
+        email = changes["email"].lower()
+        if db.scalar(select(User).where(User.email == email, User.id != user.id)):
+            raise HTTPException(status_code=409, detail="Почта уже занята")
+        user.email = email
+    if changes.get("full_name"):
+        user.full_name = changes["full_name"]
+    if "phone" in changes:
+        user.phone = changes["phone"]
+    db.commit()
+    db.refresh(user)
+    return user_out(db, user)
 
 
 @users_router.patch("/{user_id}/role", response_model=UserOut)
@@ -191,10 +241,7 @@ def block_user(user_id: int, admin: User = Depends(get_current_user),
         raise HTTPException(status_code=409,
                             detail="У мастера есть предстоящие записи, сначала перенесите их")
     if code == "client":
-        for appointment_id in db.scalars(active_appointments_query(user.id, as_master=False)).all():
-            appointment = db.get(Appointment, appointment_id)
-            appointment.status = "cancelled"
-            release_slots(db, appointment.id)
+        cancel_client_appointments(db, user.id)
     user.deleted_at = datetime.utcnow()
     drop_sessions(db, user.id)
     db.commit()
@@ -211,7 +258,6 @@ def restore_user(user_id: int, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(user)
     return user_out(db, user)
-
 
 class GroupIn(BaseModel):
     name: str = Field(min_length=1, max_length=200)

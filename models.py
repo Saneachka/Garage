@@ -58,7 +58,7 @@ class Vehicle(Base):
     brand: Mapped[str] = mapped_column(String(200))
     model: Mapped[str] = mapped_column(String(200))
     production_year: Mapped[Optional[int]] = mapped_column(SmallInteger)
-
+    archived_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
 
 class ScheduleSlot(Base):
     __tablename__ = "schedule_slots"
