@@ -2,18 +2,11 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from sqlalchemy import select
-import diagnostics
-import work_orders
-import appointments
-import auth
-import schedule
-import vehicles
-import services
+import diagnostics, work_orders,appointments, auth, schedule, vehicles, services, users, attachments
 from database import SessionLocal
 from models import Role
 from datetime import datetime
 from sqlalchemy import delete
-import users
 from models import Role, UserSession
 
 ROLES = [
@@ -54,6 +47,7 @@ app.include_router(work_orders.router)
 app.include_router(users.profile_router)
 app.include_router(users.users_router)
 app.include_router(users.groups_router)
+app.include_router(attachments.router)
 
 @app.get("/")
 def root():

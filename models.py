@@ -4,7 +4,7 @@ from typing import Optional
 
 from sqlalchemy import (
     BigInteger, Boolean, CHAR, DateTime, ForeignKey, Integer,
-    Numeric, SmallInteger, String, Text, func,
+    Numeric, SmallInteger, String, Text, func, CheckConstraint, LargeBinary
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -149,3 +149,21 @@ class WorkOrderPart(Base):
     name: Mapped[str] = mapped_column(String(200))
     quantity: Mapped[Decimal] = mapped_column(Numeric(10, 2))
     unit_price: Mapped[Decimal] = mapped_column(Numeric(12, 2))
+
+class Attachment(Base):
+    __tablename__ = "attachments"
+    __table_args__ = (
+        CheckConstraint("(work_order_id IS NULL) <> (diagnostic_id IS NULL)",
+                        name="ck_attachment_one_parent"),
+    )
+
+    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
+    work_order_id: Mapped[Optional[int]] = mapped_column(ForeignKey("work_orders.id"), index=True)
+    diagnostic_id: Mapped[Optional[int]] = mapped_column(ForeignKey("diagnostics.id"), index=True)
+    filename: Mapped[str] = mapped_column(String(255))
+    content_type: Mapped[str] = mapped_column(String(100))
+    size: Mapped[int] = mapped_column(Integer)
+    # deferred: содержимое не читается при списках, только при скачивании
+    data: Mapped[bytes] = mapped_column(LargeBinary, deferred=True)
+    uploaded_by: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from appointments import get_visible, role_code
 from auth import require_roles
 from database import get_db
+from files_logic import AttachmentOut, list_attachments, prepare_files, store_files
 from models import Appointment, Diagnostic, User
 
 router = APIRouter(prefix="/diagnostics", tags=["diagnostics"])
@@ -36,11 +37,13 @@ class DiagnosticOut(BaseModel):
     created_at: datetime
 
 
-@router.post("", response_model=DiagnosticOut, status_code=201)
-def create_diagnostic(data: DiagnosticIn, user: User = Depends(require_roles("master")),
-                      db: Session = Depends(get_db)):
-    # get_visible вернёт 404, если запись не назначена этому мастеру
-    appointment = get_visible(db, data.appointment_id, user)
+class DiagnosticWithFilesOut(DiagnosticOut):
+    files: List[AttachmentOut]
+
+
+def make_diagnostic(db: Session, user: User, appointment_id: int, findings: str,
+                    recommended_work: Optional[str]) -> Diagnostic:
+    appointment = get_visible(db, appointment_id, user)
     if appointment.status not in ("confirmed", "in_progress", "completed"):
         raise HTTPException(status_code=409,
                             detail="Диагностику можно внести только по подтверждённой записи")
@@ -49,13 +52,42 @@ def create_diagnostic(data: DiagnosticIn, user: User = Depends(require_roles("ma
     diagnostic = Diagnostic(
         appointment_id=appointment.id,
         master_user_id=user.id,
-        findings=data.findings,
-        recommended_work=data.recommended_work,
+        findings=findings,
+        recommended_work=recommended_work,
     )
     db.add(diagnostic)
+    db.flush()
+    return diagnostic
+
+
+@router.post("", response_model=DiagnosticOut, status_code=201)
+def create_diagnostic(data: DiagnosticIn, user: User = Depends(require_roles("master")),
+                      db: Session = Depends(get_db)):
+    diagnostic = make_diagnostic(db, user, data.appointment_id, data.findings,
+                                 data.recommended_work)
     db.commit()
     db.refresh(diagnostic)
     return diagnostic
+
+@router.post("/with-files", response_model=DiagnosticWithFilesOut, status_code=201)
+def create_diagnostic_with_files(
+    appointment_id: int = Form(...),
+    findings: str = Form(..., min_length=1, max_length=10000),
+    recommended_work: Optional[str] = Form(default=None, max_length=10000),
+    files: Optional[List[UploadFile]] = File(default=None),
+    user: User = Depends(require_roles("master")),
+    db: Session = Depends(get_db),
+):
+    parsed = prepare_files(files)  
+    diagnostic = make_diagnostic(db, user, appointment_id, findings, recommended_work)
+    store_files(db, parsed, user.id, diagnostic_id=diagnostic.id)
+    db.commit()
+    base = DiagnosticOut.model_validate(diagnostic).model_dump()
+    return DiagnosticWithFilesOut(
+        **base,
+        files=[AttachmentOut.model_validate(a)
+               for a in list_attachments(db, diagnostic_id=diagnostic.id)],
+    )
 
 
 @router.get("", response_model=List[DiagnosticOut])
@@ -70,8 +102,6 @@ def list_diagnostics(user: User = Depends(require_roles("client", "master", "adm
             Appointment.client_user_id == user.id)
     return db.scalars(query.order_by(Diagnostic.id.desc()).limit(500)).all()
 
-
-# Объявлен раньше "/{diagnostic_id}", чтобы пути не путались
 @router.get("/appointment/{appointment_id}", response_model=DiagnosticOut)
 def get_by_appointment(appointment_id: int,
                        user: User = Depends(require_roles("client", "master", "admin")),
