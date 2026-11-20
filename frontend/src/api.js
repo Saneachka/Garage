@@ -18,7 +18,7 @@ export async function api(path, options = {}) {
 }
 export const money = value => new Intl.NumberFormat('ru-RU', {style:'currency',currency:'RUB',maximumFractionDigits:0}).format(Number(value || 0));
 // API returns local service time without an offset. Do not convert it through UTC.
-export const dateTime = value => value ? new Date(value).toLocaleString('ru-RU',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'}) : '—';
+export const dateTime = value => value ? new Date(value).toLocaleString('ru-RU',{day:'numeric',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'}) : '—';
 export const time = value => value ? new Date(value).toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit'}) : '—';
 export const today = () => { const d=new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; };
 export const labels = {new:'Новая',confirmed:'Подтверждена',in_progress:'В работе',completed:'Завершено',cancelled:'Отменено',no_show:'Неявка'};
