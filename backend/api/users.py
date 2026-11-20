@@ -6,13 +6,13 @@ from pydantic import BaseModel, ConfigDict, EmailStr, Field
 from sqlalchemy import delete, or_, select
 from sqlalchemy.orm import Session
 
-from appointments import apply_status, role_code
-from auth import (
+from backend.api.appointments import apply_status, role_code
+from backend.api.auth import (
     SESSION_COOKIE, _token_hash, get_current_user, hash_password,
     require_roles, verify_password,
 )
-from database import get_db
-from models import (
+from backend.core.database import get_db
+from backend.core.models import (
     Appointment, Role, ScheduleSlot, User, UserGroup, UserGroupMember, UserSession,
 )
 

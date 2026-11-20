@@ -6,9 +6,9 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from auth import require_roles
-from database import get_db
-from models import Service
+from backend.api.auth import require_roles
+from backend.core.database import get_db
+from backend.core.models import Service
 
 router = APIRouter(prefix="/services", tags=["services"])
 

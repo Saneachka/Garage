@@ -1,13 +1,15 @@
 from contextlib import asynccontextmanager
+from datetime import datetime
 
 from fastapi import FastAPI
-from sqlalchemy import select
-import diagnostics, work_orders,appointments, auth, schedule, vehicles, services, users, attachments
-from database import SessionLocal
-from models import Role
-from datetime import datetime
-from sqlalchemy import delete
-from models import Role, UserSession
+from sqlalchemy import delete, select
+
+from backend.api import (
+    appointments, attachments, auth, diagnostics, schedule, services, users,
+    vehicles, work_orders,
+)
+from backend.core.database import SessionLocal
+from backend.core.models import Role, UserSession
 
 ROLES = [
     ("client", "Клиент"),

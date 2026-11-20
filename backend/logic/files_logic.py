@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from models import Attachment
+from backend.core.models import Attachment
 
 MAX_SIZE = 50 * 1024 * 1024 
 MAX_FILES = 10               

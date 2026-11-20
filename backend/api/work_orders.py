@@ -7,11 +7,11 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from appointments import apply_status, get_active_master, role_code
-from auth import require_roles
-from database import get_db
-from models import Appointment, User, WorkOrder, WorkOrderPart
-from order_logic import PartIn, create_order, load_parts, money, recalc
+from backend.api.appointments import apply_status, get_active_master, role_code
+from backend.api.auth import require_roles
+from backend.core.database import get_db
+from backend.core.models import Appointment, User, WorkOrder, WorkOrderPart
+from backend.logic.order_logic import PartIn, create_order, load_parts, money, recalc
 
 router = APIRouter(prefix="/work-orders", tags=["work-orders"])
 

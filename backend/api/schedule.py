@@ -6,9 +6,9 @@ from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, mo
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from auth import hash_password, require_roles
-from database import get_db
-from models import Appointment, Role, ScheduleSlot, User, AppointmentSlot, UserGroupMember
+from backend.api.auth import hash_password, require_roles
+from backend.core.database import get_db
+from backend.core.models import Appointment, Role, ScheduleSlot, User, AppointmentSlot, UserGroupMember
 
 masters_router = APIRouter(prefix="/masters", tags=["masters"])
 slots_router = APIRouter(prefix="/slots", tags=["slots"])

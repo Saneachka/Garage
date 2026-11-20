@@ -10,8 +10,8 @@ from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from database import get_db
-from models import Role, User, UserSession
+from backend.core.database import get_db
+from backend.core.models import Role, User, UserSession
 
 SESSION_COOKIE = "session_id"
 SESSION_DAYS = 1

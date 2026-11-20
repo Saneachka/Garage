@@ -2,9 +2,9 @@ import getpass
 
 from sqlalchemy import select
 
-from auth import hash_password
-from database import SessionLocal
-from models import Role, User
+from backend.api.auth import hash_password
+from backend.core.database import SessionLocal
+from backend.core.models import Role, User
 
 
 def main():

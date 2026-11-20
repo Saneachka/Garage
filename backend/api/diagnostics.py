@@ -6,11 +6,11 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from appointments import get_visible, role_code
-from auth import require_roles
-from database import get_db
-from files_logic import AttachmentOut, list_attachments, prepare_files, store_files
-from models import Appointment, Diagnostic, User
+from backend.api.appointments import get_visible, role_code
+from backend.api.auth import require_roles
+from backend.core.database import get_db
+from backend.core.models import Appointment, Diagnostic, User
+from backend.logic.files_logic import AttachmentOut, list_attachments, prepare_files, store_files
 
 router = APIRouter(prefix="/diagnostics", tags=["diagnostics"])
 

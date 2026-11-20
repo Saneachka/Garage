@@ -8,7 +8,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
-from database import Base
+from backend.core.database import Base
 
 BigIntPK = BigInteger().with_variant(Integer, "sqlite")
 

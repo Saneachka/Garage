@@ -5,12 +5,12 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
-from appointments import get_visible, role_code
-from auth import require_roles
-from database import get_db
-from files_logic import AttachmentOut, list_attachments, prepare_files, store_files
-from models import Attachment, Diagnostic, User, WorkOrder
-from work_orders import get_visible as get_visible_order
+from backend.api.appointments import get_visible, role_code
+from backend.api.auth import require_roles
+from backend.core.database import get_db
+from backend.core.models import Attachment, Diagnostic, User, WorkOrder
+from backend.api.work_orders import get_visible as get_visible_order
+from backend.logic.files_logic import AttachmentOut, list_attachments, prepare_files, store_files
 
 router = APIRouter(tags=["files"])
 

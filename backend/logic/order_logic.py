@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from models import Appointment, AppointmentService, WorkOrder, WorkOrderPart
+from backend.core.models import Appointment, AppointmentService, WorkOrder, WorkOrderPart
 
 CENT = Decimal("0.01")
 
